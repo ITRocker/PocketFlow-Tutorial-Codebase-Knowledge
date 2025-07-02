@@ -3,6 +3,11 @@ import os
 import logging
 import json
 from datetime import datetime
+try:
+    import dashscope
+except ImportError:
+    raise ImportError("请先安装 dashscope SDK：pip install dashscope")
+import requests
 
 # Configure logging
 log_directory = os.getenv("LOG_DIR", "logs")
@@ -32,7 +37,6 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
 
     # Check cache if enabled
     if use_cache:
-        # Load cache from disk
         cache = {}
         if os.path.exists(cache_file):
             try:
@@ -40,36 +44,41 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
                     cache = json.load(f)
             except:
                 logger.warning(f"Failed to load cache, starting with empty cache")
-
-        # Return from cache if exists
         if prompt in cache:
             logger.info(f"RESPONSE: {cache[prompt]}")
             return cache[prompt]
 
-    # # Call the LLM if not in cache or cache disabled
-    # client = genai.Client(
-    #     vertexai=True,
-    #     # TODO: change to your own project id and location
-    #     project=os.getenv("GEMINI_PROJECT_ID", "your-project-id"),
-    #     location=os.getenv("GEMINI_LOCATION", "us-central1")
-    # )
-
-    # You can comment the previous line and use the AI Studio key instead:
-    client = genai.Client(
-        api_key=os.getenv("GEMINI_API_KEY", ""),
-    )
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25")
-    # model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-04-17")
-    
-    response = client.models.generate_content(model=model, contents=[prompt])
-    response_text = response.text
+    # 用 requests 调用阿里 dashscope OpenAI 兼容接口
+    api_key = os.getenv("DASHSCOPE_API_KEY", "")
+    if not api_key:
+        raise ValueError("请先设置环境变量 DASHSCOPE_API_KEY")
+    url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "qwen-plus",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ]
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=data)
+        print(f"[Qwen3 原始返回]: {resp.text}")
+        logger.info(f"[Qwen3 原始返回]: {resp.text}")
+        result = resp.json()
+        response_text = result["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"Qwen3 调用失败: {e}")
+        response_text = f"Qwen3 调用失败: {e}"
 
     # Log the response
     logger.info(f"RESPONSE: {response_text}")
 
     # Update cache if enabled
     if use_cache:
-        # Load cache again to avoid overwrites
         cache = {}
         if os.path.exists(cache_file):
             try:
@@ -77,8 +86,6 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
                     cache = json.load(f)
             except:
                 pass
-
-        # Add to cache and save
         cache[prompt] = response_text
         try:
             with open(cache_file, "w", encoding="utf-8") as f:
